@@ -6,39 +6,56 @@ import uuid
 HOST = "0.0.0.0"
 PORT = 5000
 
-# Lista de clientes conectados
-clientes = []
-clientes_lock = threading.Lock()
-
-# Salas de juego
-salas = {}  # id_sala -> GameRoom
+salas = {}
 salas_lock = threading.Lock()
+clientes = []
+
+
+def enviar_json(sock, data):
+    try:
+        msg = json.dumps(data) + "\n"
+        sock.sendall(msg.encode("utf-8"))
+    except Exception as e:
+        print("Error enviando:", e)
 
 
 class GameRoom:
-    def __init__(self, modo):
-        self.id = str(uuid.uuid4())[:8]
+    def __init__(self, modo, creador_info):
+        self.id = uuid.uuid4().hex[:8]
         self.modo = modo
-        self.jugadores = []
+        self.jugadores = []        # lista de dicts cliente_info
+        self.listos = []           # paralela a jugadores
         self.max_jugadores = 4
+        self.agregar_jugador(creador_info)
 
     def agregar_jugador(self, cliente_info):
-        # Evitar duplicados por referencia o por nombre
+        # evitar duplicados por nombre
         for j in self.jugadores:
-            if j is cliente_info:
-                return False
-            if j.get("nombre") == cliente_info.get("nombre"):
+            if j["nombre"] == cliente_info["nombre"]:
                 return False
 
-        if len(self.jugadores) >= self.max_jugadores:
-            return False
+        if len(self.jugadores) < self.max_jugadores:
+            self.jugadores.append(cliente_info)
+            self.listos.append(False)
+            cliente_info["sala_id"] = self.id
+            return True
+        return False
 
-        self.jugadores.append(cliente_info)
-        cliente_info["sala_id"] = self.id
-        return True
+    def eliminar_jugador(self, cliente_info):
+        if cliente_info in self.jugadores:
+            idx = self.jugadores.index(cliente_info)
+            self.jugadores.pop(idx)
+            self.listos.pop(idx)
 
-    def esta_llena(self):
-        return len(self.jugadores) >= self.max_jugadores
+    def enviar_estado_sala(self):
+        data = {
+            "id_sala": self.id,
+            "jugadores": [j["nombre"] for j in self.jugadores],
+            "listos": self.listos,
+            "faltan": self.listos.count(False)
+        }
+        for p in self.jugadores:
+            enviar_json(p["sock"], {"tipo": "ESTADO_SALA", "data": data})
 
     def info_publica(self):
         return {
@@ -49,249 +66,128 @@ class GameRoom:
         }
 
 
-def enviar_json(sock, mensaje):
-    """
-    Envia un diccionario como JSON seguido de salto de linea.
-    """
-    try:
-        data = json.dumps(mensaje) + "\n"
-        sock.sendall(data.encode("utf-8"))
-    except Exception as e:
-        print(f"Error enviando mensaje: {e}")
-
-
-def broadcast_general(origen_sock, texto, nombre):
-    """
-    Envia un mensaje de chat general a todos los clientes.
-    Mas adelante podemos limitarlo a la sala del jugador.
-    """
-    mensaje = {
-        "tipo": "MENSAJE_GENERAL",
-        "data": {
-            "autor": nombre,
-            "texto": texto
-        }
-    }
-    with clientes_lock:
-        for c in clientes:
-            sock = c["sock"]
-            try:
-                enviar_json(sock, mensaje)
-            except Exception as e:
-                print(f"Error en broadcast: {e}")
-
-
-def manejar_mensaje(cliente_info, msg):
-    """
-    Procesa un mensaje ya decodificado desde un cliente.
-    msg es un dict con llaves 'tipo' y 'data'.
-    """
-    sock = cliente_info["sock"]
-    nombre = cliente_info["nombre"]
-
+def manejar_mensaje(cliente_info, msg, sock):
     tipo = msg.get("tipo")
     data = msg.get("data", {})
+    nombre = cliente_info.get("nombre")
 
-    if tipo == "LOGIN":
-        nuevo_nombre = data.get("nombre", "").strip()
-        if not nuevo_nombre:
-            respuesta = {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Nombre no valido"}
-            }
-            enviar_json(sock, respuesta)
-            return
-
-        cliente_info["nombre"] = nuevo_nombre
-        print(f"Cliente {sock.getpeername()} ahora se llama {nuevo_nombre}")
-
-        respuesta = {
-            "tipo": "LOGIN_OK",
-            "data": {"nombre": nuevo_nombre}
-        }
-        enviar_json(sock, respuesta)
-
-    elif tipo == "CHAT_GENERAL":
+    # CHAT GENERAL
+    if tipo == "MENSAJE_GENERAL":
+        texto = data.get("texto", "")
         if not nombre:
-            respuesta = {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Debes hacer LOGIN antes de chatear"}
-            }
-            enviar_json(sock, respuesta)
+            # ignoramos mensajes si todavía no hizo login
             return
+        respuesta = {
+            "tipo": "MENSAJE_GENERAL",
+            "data": {"autor": nombre, "texto": texto}
+        }
+        for c in clientes:
+            enviar_json(c["sock"], respuesta)
 
-        texto = data.get("texto", "").strip()
-        if texto:
-            print(f"[CHAT_GENERAL] {nombre}: {texto}")
-            broadcast_general(sock, texto, nombre)
-
+    # CREAR SALA
     elif tipo == "CREAR_PARTIDA":
-        # Cliente debe estar logueado
-        if not nombre:
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Debes hacer LOGIN antes de crear partida"}
-            })
-            return
-
         modo = data.get("modo", "1v1v1v1")
-        nueva_sala = GameRoom(modo)
-
+        sala = GameRoom(modo, cliente_info)
         with salas_lock:
-            salas[nueva_sala.id] = nueva_sala
-            nueva_sala.agregar_jugador(cliente_info)
+            salas[sala.id] = sala
 
-        print(f"Sala creada {nueva_sala.id} modo {modo} por {nombre}")
-
-        respuesta = {
-            "tipo": "PARTIDA_CREADA",
-            "data": {
-                "id_sala": nueva_sala.id,
-                "modo": nueva_sala.modo
-            }
-        }
-        enviar_json(sock, respuesta)
-
-        # Enviamos tambien el estado basico del lobby de esa sala
         enviar_json(sock, {
-            "tipo": "UNIDO_A_PARTIDA",
-            "data": {
-                "id_sala": nueva_sala.id,
-                "jugadores": [j["nombre"] for j in nueva_sala.jugadores]
-            }
+            "tipo": "PARTIDA_CREADA",
+            "data": sala.info_publica()
         })
 
+    # LISTAR SALAS
     elif tipo == "LISTAR_PARTIDAS":
         with salas_lock:
-            lista = [sala.info_publica()
-                     for sala in salas.values()
-                     if not sala.esta_llena()]
+            lista = [s.info_publica() for s in salas.values()]
+        enviar_json(sock, {"tipo": "PARTIDAS_DISPONIBLES", "data": lista})
 
-        respuesta = {
-            "tipo": "PARTIDAS_DISPONIBLES",
-            "data": lista
-        }
-        enviar_json(sock, respuesta)
-
+    # UNIR SALA
     elif tipo == "UNIR_PARTIDA":
-        if not nombre:
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Debes hacer LOGIN antes de unirte a una partida"}
-            })
-            return
-
         id_sala = data.get("id_sala")
-        if not id_sala:
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "id_sala requerido"}
-            })
-            return
-
-        # Ya está en alguna sala
-        sala_actual_id = cliente_info.get("sala_id")
-        if sala_actual_id is not None:
-            # Si es la MISMA sala, solo reenvía el estado, no lo agregues de nuevo
-            if sala_actual_id == id_sala:
-                with salas_lock:
-                    sala = salas.get(id_sala)
-                if sala is None:
-                    enviar_json(sock, {
-                        "tipo": "ERROR",
-                        "data": {"mensaje": "Sala inexistente"}
-                    })
-                    return
-
-                data_sala = {
-                    "id_sala": sala.id,
-                    "jugadores": [j["nombre"] for j in sala.jugadores]
-                }
-                enviar_json(sock, {
-                    "tipo": "UNIDO_A_PARTIDA",
-                    "data": data_sala
-                })
-                return
-
-            # Si es otra sala, no lo dejamos cambiarse así no más
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Ya estás en otra sala"}
-            })
-            return
-
-        # Buscar la sala
         with salas_lock:
             sala = salas.get(id_sala)
 
         if sala is None:
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Sala inexistente"}
-            })
+            enviar_json(sock, {"tipo": "ERROR",
+                               "data": {"mensaje": "Sala no existe"}})
             return
 
-        if sala.esta_llena():
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Sala llena"}
-            })
-            return
+        if sala.agregar_jugador(cliente_info):
+            data_sala = {
+                "id_sala": sala.id,
+                "jugadores": [j["nombre"] for j in sala.jugadores]
+            }
+            for p in sala.jugadores:
+                enviar_json(p["sock"],
+                            {"tipo": "UNIDO_A_PARTIDA", "data": data_sala})
+            sala.enviar_estado_sala()
+        else:
+            enviar_json(sock, {"tipo": "ERROR",
+                               "data": {"mensaje": "Sala llena"}})
 
-        agregado = sala.agregar_jugador(cliente_info)
-        if not agregado:
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "No se pudo unir a la sala"}
-            })
-            return
+    # CAMBIAR ESTADO LISTO
+    elif tipo == "CAMBIAR_LISTO":
+        id_sala = data.get("id_sala")
+        listo = data.get("listo", False)
 
-        print(f"{nombre} se unio a la sala {sala.id}")
-
-        data_sala = {
-            "id_sala": sala.id,
-            "jugadores": [j["nombre"] for j in sala.jugadores]
-        }
-
-        # Avisar a todos en la sala
         with salas_lock:
+            sala = salas.get(id_sala)
+
+        if sala is None:
+            return
+
+        for idx, info in enumerate(sala.jugadores):
+            if info["sock"] == sock:
+                sala.listos[idx] = listo
+                break
+
+        sala.enviar_estado_sala()
+
+        if sala.listos.count(True) == len(sala.jugadores) and len(sala.jugadores) == 4:
             for p in sala.jugadores:
                 enviar_json(p["sock"], {
-                    "tipo": "UNIDO_A_PARTIDA",
-                    "data": data_sala
+                    "tipo": "INICIAR_PARTIDA",
+                    "data": {"mensaje": "La partida va a comenzar"}
                 })
 
+    # CHAT DE SALA
+    elif tipo == "CHAT_SALA":
+        texto = data.get("texto", "")
+        id_sala = data.get("id_sala")
 
+        with salas_lock:
+            sala = salas.get(id_sala)
+
+        if sala is None:
+            return
+
+        for p in sala.jugadores:
+            enviar_json(p["sock"], {
+                "tipo": "MENSAJE_SALA",
+                "data": {"autor": nombre, "texto": texto}
+            })
 
     else:
-        respuesta = {
+        # cualquier tipo que no conozcamos
+        enviar_json(sock, {
             "tipo": "ERROR",
             "data": {"mensaje": f"Tipo de mensaje desconocido: {tipo}"}
-        }
-        enviar_json(sock, respuesta)
+        })
 
 
-def hilo_cliente(cliente_info):
-    """
-    Hilo encargado de recibir datos del socket de un cliente,
-    reconstruir mensajes JSON por lineas y llamar a manejar_mensaje.
-    """
-    sock = cliente_info["sock"]
-    addr = cliente_info["addr"]
+def hilo_cliente(sock, addr):
+    cliente_info = {"sock": sock, "nombre": None, "sala_id": None}
     buffer = ""
-
-    print(f"Nuevo cliente conectado desde {addr}")
 
     try:
         while True:
             data = sock.recv(4096)
             if not data:
-                print(f"Cliente {addr} desconectado")
                 break
 
             buffer += data.decode("utf-8")
 
-            # Procesar linea por linea
             while "\n" in buffer:
                 linea, buffer = buffer.split("\n", 1)
                 linea = linea.strip()
@@ -300,66 +196,55 @@ def hilo_cliente(cliente_info):
                 try:
                     msg = json.loads(linea)
                 except json.JSONDecodeError as e:
-                    print(f"JSON invalido de {addr}: {e}")
+                    print("JSON inválido:", e)
                     continue
 
-                manejar_mensaje(cliente_info, msg)
+                if msg.get("tipo") == "LOGIN":
+                    nombre = msg.get("data", {}).get("nombre", "").strip()
+                    if not nombre:
+                        enviar_json(sock, {"tipo": "ERROR",
+                                           "data": {"mensaje": "Nombre inválido"}})
+                        continue
+                    cliente_info["nombre"] = nombre
+                    enviar_json(sock, {"tipo": "LOGIN_OK",
+                                       "data": {"nombre": nombre}})
+                else:
+                    manejar_mensaje(cliente_info, msg, sock)
 
     except ConnectionResetError:
-        print(f"Conexion reseteada por el cliente {addr}")
+        print("Conexion reseteada", addr)
     finally:
-        with clientes_lock:
-            if cliente_info in clientes:
-                clientes.remove(cliente_info)
-
-        # Eliminarlo de una sala si estaba en alguna
-        sala_id = cliente_info.get("sala_id")
-        if sala_id:
+        # salir de sala si estaba dentro
+        if cliente_info["sala_id"]:
             with salas_lock:
-                sala = salas.get(sala_id)
-                if sala and cliente_info in sala.jugadores:
-                    sala.jugadores.remove(cliente_info)
-                    # Si la sala queda vacia la podemos borrar
-                    if not sala.jugadores:
-                        print(f"Sala {sala.id} vacia, se elimina")
+                sala = salas.get(cliente_info["sala_id"])
+                if sala:
+                    sala.eliminar_jugador(cliente_info)
+                    sala.enviar_estado_sala()
+                    if len(sala.jugadores) == 0:
                         del salas[sala.id]
 
         sock.close()
-        print(f"Socket con {addr} cerrado")
+        print("Cliente desconectado", addr)
 
 
-def iniciar_servidor():
-    servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    servidor.bind((HOST, PORT))
-    servidor.listen()
-
+def main():
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind((HOST, PORT))
+    server.listen(20)
     print(f"Servidor escuchando en {HOST}:{PORT}")
 
     try:
         while True:
-            sock_cliente, addr = servidor.accept()
-            cliente_info = {
-                "sock": sock_cliente,
-                "addr": addr,
-                "nombre": None,
-                "sala_id": None
-            }
-
-            with clientes_lock:
-                clientes.append(cliente_info)
-
-            hilo = threading.Thread(
-                target=hilo_cliente,
-                args=(cliente_info,),
-                daemon=True
-            )
-            hilo.start()
-    except KeyboardInterrupt:
-        print("Servidor detenido por el usuario")
+            sock, addr = server.accept()
+            print("Nuevo cliente", addr)
+            clientes.append({"sock": sock})
+            threading.Thread(target=hilo_cliente,
+                             args=(sock, addr),
+                             daemon=True).start()
     finally:
-        servidor.close()
+        server.close()
 
 
 if __name__ == "__main__":
-    iniciar_servidor()
+    main()

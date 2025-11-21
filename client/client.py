@@ -99,7 +99,7 @@ def main():
                 break
 
             msg = {
-                "tipo": "CHAT_GENERAL",
+                "tipo": "MENSAJE_GENERAL",
                 "data": {"texto": texto}
             }
             enviar_json(sock, msg)
