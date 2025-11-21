@@ -3,6 +3,8 @@ import threading
 import json
 import uuid
 import random
+
+from server.game import calcular_nueva_posicion
  
 
 HOST = "0.0.0.0"
@@ -321,26 +323,8 @@ def manejar_mensaje(cliente_info, msg, sock):
         pos_actual = sala.fichas[color][indice_ficha]
 
 
-        # pos = None -> está en base, solo sale con 1 o 6
-        if pos_actual is None:
-            if pasos not in (1, 6):
-                # no puede salir de base, no hacemos nada
-                return
-            # sale a su casilla de inicio
-            inicio = sala.offset_color[color]
-            nueva_pos = inicio
-        elif isinstance(pos_actual, int):
-            # está en el camino principal
-            nueva_pos = (pos_actual + pasos) % CAMINO_LEN
-        elif isinstance(pos_actual, tuple) and pos_actual[0] == "fin":
-            # está en recta final, entrada exacta a meta
-            idx_fin = pos_actual[1]
-            nuevo_idx = idx_fin + pasos
-            if nuevo_idx > FIN_LEN:
-                # no se puede pasar, movimiento inválido
-                return
-            nueva_pos = ("fin", nuevo_idx)
-        else:
+        nueva_pos = calcular_nueva_posicion(pos_actual, pasos, color)
+        if nueva_pos is None:
             return
 
         if isinstance(nueva_pos, int):
