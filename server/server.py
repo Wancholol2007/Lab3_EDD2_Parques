@@ -4,7 +4,7 @@ import json
 import uuid
 import random
 
-from server.game import calcular_nueva_posicion
+from game import calcular_nueva_posicion
  
 
 HOST = "0.0.0.0"
