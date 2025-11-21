@@ -2,6 +2,8 @@ import socket
 import threading
 import json
 import uuid
+import random
+ 
 
 HOST = "0.0.0.0"
 PORT = 5000
@@ -220,6 +222,36 @@ def manejar_mensaje(cliente_info, msg, sock):
                 "tipo": "MENSAJE_SALA",
                 "data": {"autor": nombre, "texto": texto}
             })
+
+    elif tipo == "LANZAR_DADO":
+        id_sala = data.get("id_sala")
+
+        with salas_lock:
+            sala = salas.get(id_sala)
+
+        if sala is None:
+            return
+
+        # validar que sea el jugador que tiene el turno
+        jugador_actual_info = sala.jugador_actual()
+        if not jugador_actual_info or jugador_actual_info["sock"] is not sock:
+            # ignorar intentos fuera de turno
+            return
+
+        # generar número del dado
+        valor = random.randint(1, 6)
+
+        # avisar a todos el resultado
+        for p in sala.jugadores:
+            enviar_json(p["sock"], {
+                "tipo": "RESULTADO_DADO",
+                "data": {
+                    "jugador": jugador_actual_info["nombre"],
+                    "valor": valor,
+                    "id_sala": sala.id
+                }
+            })
+
 
     else:
         enviar_json(sock, {

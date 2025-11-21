@@ -116,6 +116,14 @@ class App(tk.Tk):
             messagebox.showerror("Error", mensaje)
             return
         
+        elif tipo == "RESULTADO_DADO":
+            jugador = data.get("jugador")
+            valor = data.get("valor")
+
+            if isinstance(self.frame_actual, FrameTablero):
+                self.after(0, lambda: self.frame_actual.mostrar_dado(jugador, valor))
+
+                
         elif tipo == "CAMBIO_TURNO":
             jugador_actual = data.get("jugador_actual")
             if isinstance(self.frame_actual, FrameTablero):
@@ -291,6 +299,13 @@ class FrameTablero(tk.Frame):
         self.btn_terminar = tk.Button(self, text="Terminar turno", command=self.terminar_turno)
         self.btn_terminar.pack(pady=5)
 
+        self.btn_dado = tk.Button(self, text="Lanzar Dado", command=self.lanzar_dado)
+        self.btn_dado.pack(pady=5)
+
+        self.lbl_dado = tk.Label(self, text="Dado: -", font=("Arial", 14))
+        self.lbl_dado.pack(pady=5)
+
+
         self.canvas = tk.Canvas(self, width=600, height=600, bg="white")
         self.canvas.pack(pady=5)
 
@@ -392,6 +407,16 @@ class FrameTablero(tk.Frame):
         y2 = y1 + cell
         self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="black")
 
+    def lanzar_dado(self):
+        msg = {
+            "tipo": "LANZAR_DADO",
+            "data": {"id_sala": self.id_sala}
+        }
+        self.app.network.enviar(msg)
+
+    def mostrar_dado(self, jugador, valor):
+        self.lbl_dado.config(text=f"Dado ({jugador}): {valor}")
+
     def dibujar_fichas_iniciales(self):
         # fichas en las casas de colores (4 por color)
         cell = 40
@@ -445,11 +470,13 @@ class FrameTablero(tk.Frame):
             draw_piece(cx, cy, "#7F7F1B")
 
     def actualizar_botones_turno(self):
-        # solo habilitar el botón si me toca a mí
         if self.jugador_actual == self.mi_nombre:
             self.btn_terminar.config(state="normal")
+            self.btn_dado.config(state="normal")
         else:
             self.btn_terminar.config(state="disabled")
+            self.btn_dado.config(state="disabled")
+
 
     def actualizar_turno(self, jugador_actual):
         self.jugador_actual = jugador_actual
