@@ -49,24 +49,6 @@ class GameRoom:
         }
 
 
-
-
-
-    def esta_llena(self):
-        return len(self.jugadores) >= self.max_jugadores
-
-    def info_publica(self):
-        """
-        Info para mostrar en el lobby.
-        """
-        return {
-            "id": self.id,
-            "modo": self.modo,
-            "jugadores": len(self.jugadores),
-            "max": self.max_jugadores
-        }
-
-
 def enviar_json(sock, mensaje):
     """
     Envia un diccionario como JSON seguido de salto de linea.

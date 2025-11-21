@@ -56,8 +56,20 @@ class App(tk.Tk):
             messagebox.showinfo("Sala creada", f"La sala fue creada con ID {data['id_sala']}")
 
         elif tipo == "UNIDO_A_PARTIDA":
+            print("DEBUG: recibido UNIDO_A_PARTIDA", data)
+
+            id_sala = data.get("id_sala")
             jugadores = data.get("jugadores", [])
-            messagebox.showinfo("Sala", f"Jugadores en sala: {jugadores}")
+
+            if not id_sala:
+                print("ERROR: UNIDO_A_PARTIDA llegó SIN id_sala. Revisa servidor.")
+                return
+
+            # Cambiar pantalla a sala de espera
+            self.cambiar_frame(FrameSalaEspera(self, id_sala))
+
+            # Inicializar estados no listos
+            self.frame_actual.actualizar_jugadores(jugadores, [False] * len(jugadores))
 
         elif tipo == "MENSAJE_GENERAL":
             if isinstance(self.frame_actual, FrameLobby):
@@ -157,3 +169,58 @@ class FrameLobby(tk.Frame):
 if __name__ == "__main__":
     app = App()
     app.mainloop()
+
+class FrameSalaEspera(tk.Frame):
+    def __init__(self, app, id_sala):
+        super().__init__(app)
+        self.app = app
+        self.id_sala = id_sala
+
+        tk.Label(self, text=f"Sala {id_sala}", font=("Arial", 16)).pack(pady=10)
+
+        # Lista de jugadores
+        self.lista = tk.Listbox(self, height=6)
+        self.lista.pack(fill="x", padx=20, pady=10)
+
+        # Botón listo
+        self.boton_listo = tk.Button(self, text="Estoy listo", command=self.marcar_listo)
+        self.boton_listo.pack(pady=5)
+
+        # Chat interno
+        tk.Label(self, text="Chat de sala:").pack()
+        self.chat = tk.Text(self, height=10, state="disabled")
+        self.chat.pack(fill="both", expand=True, padx=10)
+
+        self.entry_chat = tk.Entry(self)
+        self.entry_chat.pack(fill="x", padx=10, pady=5)
+        self.entry_chat.bind("<Return>", self.enviar_chat)
+
+    def actualizar_jugadores(self, jugadores, listos):
+        self.lista.delete(0, tk.END)
+        for j, l in zip(jugadores, listos):
+            estado = "✔️ Listo" if l else "❌ No listo"
+            self.lista.insert(tk.END, f"{j} — {estado}")
+
+    def marcar_listo(self):
+        msg = {
+            "tipo": "CAMBIAR_LISTO",
+            "data": {"listo": True, "id_sala": self.id_sala}
+        }
+        self.app.network.enviar(msg)
+        self.boton_listo.config(state="disabled", text="Esperando...")
+
+    def enviar_chat(self, event):
+        txt = self.entry_chat.get().strip()
+        if txt:
+            msg = {
+                "tipo": "CHAT_SALA",
+                "data": {"texto": txt, "id_sala": self.id_sala}
+            }
+            self.app.network.enviar(msg)
+        self.entry_chat.delete(0, tk.END)
+
+    def agregar_chat(self, autor, texto):
+        self.chat.config(state="normal")
+        self.chat.insert(tk.END, f"{autor}: {texto}\n")
+        self.chat.config(state="disabled")
+        self.chat.see(tk.END)
