@@ -165,11 +165,6 @@ class FrameLobby(tk.Frame):
             self.app.network.enviar(msg)
         self.entry_chat.delete(0, tk.END)
 
-
-if __name__ == "__main__":
-    app = App()
-    app.mainloop()
-
 class FrameSalaEspera(tk.Frame):
     def __init__(self, app, id_sala):
         super().__init__(app)
@@ -224,3 +219,8 @@ class FrameSalaEspera(tk.Frame):
         self.chat.insert(tk.END, f"{autor}: {texto}\n")
         self.chat.config(state="disabled")
         self.chat.see(tk.END)
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
+
