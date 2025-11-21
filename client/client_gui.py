@@ -128,6 +128,12 @@ class App(tk.Tk):
             jugador_actual = data.get("jugador_actual")
             if isinstance(self.frame_actual, FrameTablero):
                 self.after(0, lambda: self.frame_actual.actualizar_turno(jugador_actual))
+        
+        elif tipo == "ESTADO_FICHAS":
+            fichas = data.get("fichas", {})
+            if isinstance(self.frame_actual, FrameTablero):
+                self.after(0, lambda: self.frame_actual.actualizar_fichas(fichas))
+
 
 # ============================================================
 # Frames
@@ -313,6 +319,15 @@ class FrameTablero(tk.Frame):
         self.dibujar_fichas_iniciales()
 
         self.actualizar_botones_turno()
+        self.camino = self.definir_camino()
+        self.fichas_items = {
+            "azul": [],
+            "rojo": [],
+            "amarillo": [],
+            "verde": []
+        }
+        self.dibujar_tablero()
+        self.crear_fichas_iniciales()
 
     def dibujar_tablero(self):
         cell = 40
@@ -417,57 +432,34 @@ class FrameTablero(tk.Frame):
     def mostrar_dado(self, jugador, valor):
         self.lbl_dado.config(text=f"Dado ({jugador}): {valor}")
 
-    def dibujar_fichas_iniciales(self):
-        # fichas en las casas de colores (4 por color)
+    def crear_fichas_iniciales(self):
         cell = 40
         offset = 20
         r = cell * 0.3
 
-        def draw_piece(cx, cy, color):
-            self.canvas.create_oval(
-                cx - r, cy - r, cx + r, cy + r,
-                fill=color, outline="black"
-            )
+        def crear_grupo(bases, color_draw):
+            items = []
+            for (f, c) in bases:
+                cx = offset + c * cell + cell / 2
+                cy = offset + f * cell + cell / 2
+                item = self.canvas.create_oval(
+                    cx - r, cy - r, cx + r, cy + r,
+                    fill=color_draw, outline="black"
+                )
+                items.append(item)
+            return items
 
-        # azul (arriba izquierda)
-        bases_azul = [
-            (1, 1), (1, 3),
-            (3, 1), (3, 3)
-        ]
-        for f, c in bases_azul:
-            cx = offset + c * cell + cell / 2
-            cy = offset + f * cell + cell / 2
-            draw_piece(cx, cy, "#1B2F7F")
+        # bases como antes
+        bases_azul = [(1, 1), (1, 3), (3, 1), (3, 3)]
+        bases_rojo = [(1, 11), (1, 13), (3, 11), (3, 13)]
+        bases_verde = [(11, 1), (11, 3), (13, 1), (13, 3)]
+        bases_amarillo = [(11, 11), (11, 13), (13, 11), (13, 13)]
 
-        # rojo (arriba derecha)
-        bases_rojo = [
-            (1, 11), (1, 13),
-            (3, 11), (3, 13)
-        ]
-        for f, c in bases_rojo:
-            cx = offset + c * cell + cell / 2
-            cy = offset + f * cell + cell / 2
-            draw_piece(cx, cy, "#7F1B1B")
+        self.fichas_items["azul"] = crear_grupo(bases_azul, "#1B2F7F")
+        self.fichas_items["rojo"] = crear_grupo(bases_rojo, "#7F1B1B")
+        self.fichas_items["verde"] = crear_grupo(bases_verde, "#1B7F1B")
+        self.fichas_items["amarillo"] = crear_grupo(bases_amarillo, "#7F7F1B")
 
-        # verde (abajo izquierda)
-        bases_verde = [
-            (11, 1), (11, 3),
-            (13, 1), (13, 3)
-        ]
-        for f, c in bases_verde:
-            cx = offset + c * cell + cell / 2
-            cy = offset + f * cell + cell / 2
-            draw_piece(cx, cy, "#1B7F1B")
-
-        # amarillo (abajo derecha)
-        bases_amarillo = [
-            (11, 11), (11, 13),
-            (13, 11), (13, 13)
-        ]
-        for f, c in bases_amarillo:
-            cx = offset + c * cell + cell / 2
-            cy = offset + f * cell + cell / 2
-            draw_piece(cx, cy, "#7F7F1B")
 
     def actualizar_botones_turno(self):
         if self.jugador_actual == self.mi_nombre:
@@ -484,12 +476,91 @@ class FrameTablero(tk.Frame):
         self.actualizar_botones_turno()
 
     def terminar_turno(self):
-        # avisar al servidor que termino mi turno
         msg = {
             "tipo": "TERMINAR_TURNO",
             "data": {"id_sala": self.id_sala}
         }
         self.app.network.enviar(msg)
+
+    def mostrar_dado(self, jugador, valor):
+        self.lbl_dado.config(text=f"Dado ({jugador}): {valor}")
+        if jugador == self.mi_nombre:
+            msg = {
+                "tipo": "MOVER_FICHA",
+                "data": {
+                    "id_sala": self.id_sala,
+                    "indice_ficha": 0
+                }
+            }
+            self.app.network.enviar(msg)
+
+    def definir_camino(self):
+        cell = 40
+        offset = 20
+        coords = []
+
+        # Ejemplo simple: borde interno de un cuadrado 13x13
+        # arriba (de izq a der)
+        for c in range(1, 14):
+            coords.append((offset + c * cell + cell / 2, offset + 1 * cell + cell / 2))
+        # derecha (arriba a abajo)
+        for r in range(2, 14):
+            coords.append((offset + 14 * cell + cell / 2, offset + r * cell + cell / 2))
+        # abajo (der a izq)
+        for c in range(13, 0, -1):
+            coords.append((offset + c * cell + cell / 2, offset + 14 * cell + cell / 2))
+        # izquierda (abajo a arriba)
+        for r in range(13, 1, -1):
+            coords.append((offset + 1 * cell + cell / 2, offset + r * cell + cell / 2))
+
+        # si son más de 52 corta, si son menos puedes ajustar
+        return coords[:52]
+
+    def actualizar_fichas(self, fichas_estado):
+        cell = 40
+        offset = 20
+        r = cell * 0.3
+
+        # posiciones de base mismas que usamos al crear
+        bases = {
+            "azul": [(1, 1), (1, 3), (3, 1), (3, 3)],
+            "rojo": [(1, 11), (1, 13), (3, 11), (3, 13)],
+            "verde": [(11, 1), (11, 3), (13, 1), (13, 3)],
+            "amarillo": [(11, 11), (11, 13), (13, 11), (13, 13)],
+        }
+
+        for color, lista_pos in fichas_estado.items():
+            items = self.fichas_items.get(color, [])
+            for i, pos in enumerate(lista_pos):
+                if i >= len(items):
+                    continue
+                item_id = items[i]
+
+                if pos is None:
+                    # en base
+                    f, c = bases[color][i]
+                    cx = offset + c * cell + cell / 2
+                    cy = offset + f * cell + cell / 2
+                elif isinstance(pos, int):
+                    if 0 <= pos < len(self.camino):
+                        cx, cy = self.camino[pos]
+                    else:
+                        continue
+                elif isinstance(pos, (list, tuple)) and pos[0] == "fin":
+                    idx_fin = pos[1]
+                    # ejemplo: colocar la recta final cerca del centro según color
+                    # aquí puedes inventarte 6 casillas hacia el centro
+                    # por ahora las apilamos cerca del centro
+                    cx = 20 + 7 * cell + (idx_fin - 1) * 5
+                    cy = 20 + 7 * cell
+                else:
+                    continue
+
+                # mover la ficha a (cx, cy)
+                self.canvas.coords(
+                    item_id,
+                    cx - r, cy - r, cx + r, cy + r
+                )
 
 
 

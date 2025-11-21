@@ -20,6 +20,8 @@ def enviar_json(sock, data):
     except Exception as e:
         print("Error enviando:", e)
 
+CAMINO_LEN = 52
+FIN_LEN = 6
 
 class GameRoom:
     def __init__(self, modo, creador_info):
@@ -30,6 +32,22 @@ class GameRoom:
         self.max_jugadores = 4
         self.turno_idx = 0
         self.agregar_jugador(creador_info)
+        self.colores = ["azul", "rojo", "amarillo", "verde"]
+        self.fichas = {
+            "azul":    [None, None, None, None],
+            "rojo":    [None, None, None, None],
+            "amarillo":[None, None, None, None],
+            "verde":   [None, None, None, None],
+        }
+        self.offset_color = {
+            "azul": 0,
+            "rojo": 13,
+            "amarillo": 26,
+            "verde": 39
+        }
+        self.ultimo_dado = None
+
+        
 
     def agregar_jugador(self, cliente_info):
         # evitar duplicados por nombre
@@ -77,6 +95,25 @@ class GameRoom:
         if not self.jugadores:
             return
         self.turno_idx = (self.turno_idx + 1) % len(self.jugadores)
+
+    def color_de_jugador(self, cliente_info):
+        if cliente_info not in self.jugadores:
+            return None
+        idx = self.jugadores.index(cliente_info)
+        if idx < len(self.colores):
+            return self.colores[idx]
+        return None
+
+    def jugador_actual(self):
+        if not self.jugadores:
+            return None
+        return self.jugadores[self.turno_idx]
+
+    def avanzar_turno(self):
+        if not self.jugadores:
+            return
+        self.turno_idx = (self.turno_idx + 1) % len(self.jugadores)
+
 
 
 
@@ -251,6 +288,95 @@ def manejar_mensaje(cliente_info, msg, sock):
                     "id_sala": sala.id
                 }
             })
+
+        sala.ultimo_dado = valor
+
+    elif tipo == "MOVER_FICHA":
+        id_sala = data.get("id_sala")
+        indice_ficha = data.get("indice_ficha", 0)
+
+        with salas_lock:
+            sala = salas.get(id_sala)
+
+        if sala is None:
+            return
+
+        jugador_actual = sala.jugador_actual()
+        if not jugador_actual or jugador_actual["sock"] is not sock:
+            # no es tu turno
+            return
+
+        color = sala.color_de_jugador(cliente_info)
+        if color is None:
+            return
+
+        # valor de dado que vamos a usar
+        pasos = sala.ultimo_dado
+        if pasos is None:
+            return  # aún no ha tirado
+
+        if not (0 <= indice_ficha < 4):
+            return
+
+        pos_actual = sala.fichas[color][indice_ficha]
+
+
+        # pos = None -> está en base, solo sale con 1 o 6
+        if pos_actual is None:
+            if pasos not in (1, 6):
+                # no puede salir de base, no hacemos nada
+                return
+            # sale a su casilla de inicio
+            inicio = sala.offset_color[color]
+            nueva_pos = inicio
+        elif isinstance(pos_actual, int):
+            # está en el camino principal
+            nueva_pos = (pos_actual + pasos) % CAMINO_LEN
+        elif isinstance(pos_actual, tuple) and pos_actual[0] == "fin":
+            # está en recta final, entrada exacta a meta
+            idx_fin = pos_actual[1]
+            nuevo_idx = idx_fin + pasos
+            if nuevo_idx > FIN_LEN:
+                # no se puede pasar, movimiento inválido
+                return
+            nueva_pos = ("fin", nuevo_idx)
+        else:
+            return
+
+        if isinstance(nueva_pos, int):
+            for color_rival, fichas_rival in sala.fichas.items():
+                if color_rival == color:
+                    continue
+                for i, pos_rival in enumerate(fichas_rival):
+                    if pos_rival == nueva_pos:
+                        # captura, devolver a base
+                        fichas_rival[i] = None
+
+        # aplicar movimiento
+        sala.fichas[color][indice_ficha] = nueva_pos
+
+        # nuevo estado de fichas
+        data_fichas = {
+            "fichas": sala.fichas
+        }
+        for p in sala.jugadores:
+            enviar_json(p["sock"], {
+                "tipo": "ESTADO_FICHAS",
+                "data": data_fichas
+            })
+
+        sala.ultimo_dado = None
+        sala.avanzar_turno()
+        nuevo_jugador = sala.jugador_actual()
+        if nuevo_jugador:
+            for p in sala.jugadores:
+                enviar_json(p["sock"], {
+                    "tipo": "CAMBIO_TURNO",
+                    "data": {
+                        "id_sala": sala.id,
+                        "jugador_actual": nuevo_jugador["nombre"]
+                    }
+                })
 
 
     else:
