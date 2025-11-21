@@ -16,28 +16,38 @@ salas_lock = threading.Lock()
 
 
 class GameRoom:
-    """
-    Representa una sala de juego.
-    Por ahora solo manejamos lobby, mas adelante aqui metemos el estado del Parques.
-    """
     def __init__(self, modo):
-        self.id = str(uuid.uuid4())[:8]   # ID corto y legible
-        self.modo = modo                  # "1v1v1v1", "1v1v1v1_BOTS", "2v2"
-        self.jugadores = []               # lista de cliente_info
+        self.id = str(uuid.uuid4())[:8]
+        self.modo = modo
+        self.jugadores = []
         self.max_jugadores = 4
 
     def agregar_jugador(self, cliente_info):
-        # Evitar duplicados por nombre
+        # Evitar duplicados por referencia o por nombre
         for j in self.jugadores:
-            if j["nombre"] == cliente_info["nombre"]:
+            if j is cliente_info:
+                return False
+            if j.get("nombre") == cliente_info.get("nombre"):
                 return False
 
-        if len(self.jugadores) < self.max_jugadores:
-            self.jugadores.append(cliente_info)
-            cliente_info["sala_id"] = self.id
-            return True
+        if len(self.jugadores) >= self.max_jugadores:
+            return False
 
-        return False
+        self.jugadores.append(cliente_info)
+        cliente_info["sala_id"] = self.id
+        return True
+
+    def esta_llena(self):
+        return len(self.jugadores) >= self.max_jugadores
+
+    def info_publica(self):
+        return {
+            "id": self.id,
+            "modo": self.modo,
+            "jugadores": len(self.jugadores),
+            "max": self.max_jugadores
+        }
+
 
 
 
@@ -182,22 +192,6 @@ def manejar_mensaje(cliente_info, msg):
         enviar_json(sock, respuesta)
 
     elif tipo == "UNIR_PARTIDA":
-        # Si ya está en una sala, no permitir unirse de nuevo
-        if cliente_info.get("sala_id") == id_sala:
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Ya estás en esta sala"}
-            })
-            return
-
-        # Evitar cambio de sala sin salir
-        if cliente_info.get("sala_id") is not None:
-            enviar_json(sock, {
-                "tipo": "ERROR",
-                "data": {"mensaje": "Ya estás en una sala"}
-            })
-            return
-
         if not nombre:
             enviar_json(sock, {
                 "tipo": "ERROR",
@@ -213,14 +207,38 @@ def manejar_mensaje(cliente_info, msg):
             })
             return
 
-        # EVITAR MULTICUENTA: si ya está en una sala, no permitir volver a unirse
-        if cliente_info.get("sala_id") is not None:
+        # Ya está en alguna sala
+        sala_actual_id = cliente_info.get("sala_id")
+        if sala_actual_id is not None:
+            # Si es la MISMA sala, solo reenvía el estado, no lo agregues de nuevo
+            if sala_actual_id == id_sala:
+                with salas_lock:
+                    sala = salas.get(id_sala)
+                if sala is None:
+                    enviar_json(sock, {
+                        "tipo": "ERROR",
+                        "data": {"mensaje": "Sala inexistente"}
+                    })
+                    return
+
+                data_sala = {
+                    "id_sala": sala.id,
+                    "jugadores": [j["nombre"] for j in sala.jugadores]
+                }
+                enviar_json(sock, {
+                    "tipo": "UNIDO_A_PARTIDA",
+                    "data": data_sala
+                })
+                return
+
+            # Si es otra sala, no lo dejamos cambiarse así no más
             enviar_json(sock, {
                 "tipo": "ERROR",
-                "data": {"mensaje": "Ya estás en una sala"}
+                "data": {"mensaje": "Ya estás en otra sala"}
             })
             return
 
+        # Buscar la sala
         with salas_lock:
             sala = salas.get(id_sala)
 
@@ -238,7 +256,6 @@ def manejar_mensaje(cliente_info, msg):
             })
             return
 
-        # AGREGAR JUGADOR, PERO SOLO UNA VEZ
         agregado = sala.agregar_jugador(cliente_info)
         if not agregado:
             enviar_json(sock, {
@@ -254,13 +271,14 @@ def manejar_mensaje(cliente_info, msg):
             "jugadores": [j["nombre"] for j in sala.jugadores]
         }
 
-        # Notificar a todos en la sala (sin duplicados)
+        # Avisar a todos en la sala
         with salas_lock:
             for p in sala.jugadores:
                 enviar_json(p["sock"], {
                     "tipo": "UNIDO_A_PARTIDA",
                     "data": data_sala
                 })
+
 
 
     else:
