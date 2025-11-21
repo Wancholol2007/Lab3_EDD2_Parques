@@ -101,12 +101,12 @@ class App(tk.Tk):
                 self.after(0, lambda: self.frame_actual.agregar_chat(autor, texto))
 
         elif tipo == "INICIAR_PARTIDA":
-            # por ahora solo mostramos popup y cambiamos al tablero
             mensaje = data.get("mensaje", "La partida va a comenzar")
+            jugador_actual = data.get("jugador_actual")
             messagebox.showinfo("Partida", mensaje)
 
             def _go():
-                frame = FrameTablero(self, self.sala_actual_id, self.mi_nombre)
+                frame = FrameTablero(self, self.sala_actual_id, self.mi_nombre, jugador_actual)
                 self.cambiar_frame(frame)
 
             self.after(0, _go)
@@ -115,6 +115,11 @@ class App(tk.Tk):
             mensaje = data.get("mensaje", "Error desconocido")
             messagebox.showerror("Error", mensaje)
             return
+        
+        elif tipo == "CAMBIO_TURNO":
+            jugador_actual = data.get("jugador_actual")
+            if isinstance(self.frame_actual, FrameTablero):
+                self.after(0, lambda: self.frame_actual.actualizar_turno(jugador_actual))
 
 # ============================================================
 # Frames
@@ -270,24 +275,29 @@ class FrameSalaEspera(tk.Frame):
 
 
 class FrameTablero(tk.Frame):
-    """
-    Tablero detallado de Parqués (estilo Ludo 15x15).
-    Por ahora solo dibujamos el tablero y fichas iniciales.
-    """
-    def __init__(self, app, id_sala, mi_nombre):
+    def __init__(self, app, id_sala, mi_nombre, jugador_actual):
         super().__init__(app)
         self.app = app
         self.id_sala = id_sala
         self.mi_nombre = mi_nombre
+        self.jugador_actual = jugador_actual
 
         tk.Label(self, text=f"Tablero - Sala {id_sala} - Jugador: {mi_nombre}",
-                 font=("Arial", 16)).pack(pady=10)
+                 font=("Arial", 16)).pack(pady=5)
+
+        self.lbl_turno = tk.Label(self, text=f"Turno de: {jugador_actual}", font=("Arial", 14))
+        self.lbl_turno.pack(pady=5)
+
+        self.btn_terminar = tk.Button(self, text="Terminar turno", command=self.terminar_turno)
+        self.btn_terminar.pack(pady=5)
 
         self.canvas = tk.Canvas(self, width=600, height=600, bg="white")
         self.canvas.pack(pady=5)
 
         self.dibujar_tablero()
         self.dibujar_fichas_iniciales()
+
+        self.actualizar_botones_turno()
 
     def dibujar_tablero(self):
         cell = 40
@@ -433,6 +443,27 @@ class FrameTablero(tk.Frame):
             cx = offset + c * cell + cell / 2
             cy = offset + f * cell + cell / 2
             draw_piece(cx, cy, "#7F7F1B")
+
+    def actualizar_botones_turno(self):
+        # solo habilitar el botón si me toca a mí
+        if self.jugador_actual == self.mi_nombre:
+            self.btn_terminar.config(state="normal")
+        else:
+            self.btn_terminar.config(state="disabled")
+
+    def actualizar_turno(self, jugador_actual):
+        self.jugador_actual = jugador_actual
+        self.lbl_turno.config(text=f"Turno de: {jugador_actual}")
+        self.actualizar_botones_turno()
+
+    def terminar_turno(self):
+        # avisar al servidor que termino mi turno
+        msg = {
+            "tipo": "TERMINAR_TURNO",
+            "data": {"id_sala": self.id_sala}
+        }
+        self.app.network.enviar(msg)
+
 
 
 if __name__ == "__main__":

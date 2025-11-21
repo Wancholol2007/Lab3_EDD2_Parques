@@ -26,6 +26,7 @@ class GameRoom:
         self.jugadores = []        # lista de dicts cliente_info
         self.listos = []           # paralela a jugadores
         self.max_jugadores = 4
+        self.turno_idx = 0
         self.agregar_jugador(creador_info)
 
     def agregar_jugador(self, cliente_info):
@@ -64,6 +65,17 @@ class GameRoom:
             "jugadores": len(self.jugadores),
             "max": self.max_jugadores
         }
+    
+    def jugador_actual(self):
+        if not self.jugadores:
+            return None
+        return self.jugadores[self.turno_idx]
+
+    def avanzar_turno(self):
+        if not self.jugadores:
+            return
+        self.turno_idx = (self.turno_idx + 1) % len(self.jugadores)
+
 
 
 def manejar_mensaje(cliente_info, msg, sock):
@@ -75,8 +87,8 @@ def manejar_mensaje(cliente_info, msg, sock):
     if tipo == "MENSAJE_GENERAL":
         texto = data.get("texto", "")
         if not nombre:
-            # ignoramos mensajes si todavía no hizo login
-            return
+            return  # ignoramos si no tiene login
+
         respuesta = {
             "tipo": "MENSAJE_GENERAL",
             "data": {"autor": nombre, "texto": texto}
@@ -110,7 +122,7 @@ def manejar_mensaje(cliente_info, msg, sock):
 
         if sala is None:
             enviar_json(sock, {"tipo": "ERROR",
-                               "data": {"mensaje": "Sala no existe"}})
+                            "data": {"mensaje": "Sala no existe"}})
             return
 
         if sala.agregar_jugador(cliente_info):
@@ -124,7 +136,7 @@ def manejar_mensaje(cliente_info, msg, sock):
             sala.enviar_estado_sala()
         else:
             enviar_json(sock, {"tipo": "ERROR",
-                               "data": {"mensaje": "Sala llena"}})
+                            "data": {"mensaje": "Sala llena"}})
 
     # CAMBIAR ESTADO LISTO
     elif tipo == "CAMBIAR_LISTO":
@@ -144,12 +156,53 @@ def manejar_mensaje(cliente_info, msg, sock):
 
         sala.enviar_estado_sala()
 
+        # si todos listos y hay 4 jugadores, iniciar partida y fijar turno
         if sala.listos.count(True) == len(sala.jugadores) and len(sala.jugadores) == 4:
+            sala.turno_idx = 0  # empieza el primero en la lista
+            jugador_actual = sala.jugador_actual()["nombre"]
+
             for p in sala.jugadores:
                 enviar_json(p["sock"], {
                     "tipo": "INICIAR_PARTIDA",
-                    "data": {"mensaje": "La partida va a comenzar"}
+                    "data": {
+                        "mensaje": "La partida va a comenzar",
+                        "id_sala": sala.id,
+                        "jugador_actual": jugador_actual
+                    }
                 })
+
+    elif tipo == "TERMINAR_TURNO":
+        id_sala = data.get("id_sala")
+
+        with salas_lock:
+            sala = salas.get(id_sala)
+
+        if sala is None:
+            return
+
+        # Solo puede terminar turno el jugador actual
+        jugador_actual_info = sala.jugador_actual()
+        if not jugador_actual_info or jugador_actual_info["sock"] is not sock:
+            # ignoramos si no es su turno
+            return
+
+        # avanzar turno
+        sala.avanzar_turno()
+        nuevo_actual = sala.jugador_actual()
+        if not nuevo_actual:
+            return
+
+        nombre_actual = nuevo_actual["nombre"]
+
+        # Avisar a todos quién sigue
+        for p in sala.jugadores:
+            enviar_json(p["sock"], {
+                "tipo": "CAMBIO_TURNO",
+                "data": {
+                    "id_sala": sala.id,
+                    "jugador_actual": nombre_actual
+                }
+            })
 
     # CHAT DE SALA
     elif tipo == "CHAT_SALA":
@@ -169,7 +222,6 @@ def manejar_mensaje(cliente_info, msg, sock):
             })
 
     else:
-        # cualquier tipo que no conozcamos
         enviar_json(sock, {
             "tipo": "ERROR",
             "data": {"mensaje": f"Tipo de mensaje desconocido: {tipo}"}
@@ -203,11 +255,11 @@ def hilo_cliente(sock, addr):
                     nombre = msg.get("data", {}).get("nombre", "").strip()
                     if not nombre:
                         enviar_json(sock, {"tipo": "ERROR",
-                                           "data": {"mensaje": "Nombre inválido"}})
+                                        "data": {"mensaje": "Nombre inválido"}})
                         continue
                     cliente_info["nombre"] = nombre
                     enviar_json(sock, {"tipo": "LOGIN_OK",
-                                       "data": {"nombre": nombre}})
+                                    "data": {"nombre": nombre}})
                 else:
                     manejar_mensaje(cliente_info, msg, sock)
 
@@ -240,8 +292,8 @@ def main():
             print("Nuevo cliente", addr)
             clientes.append({"sock": sock})
             threading.Thread(target=hilo_cliente,
-                             args=(sock, addr),
-                             daemon=True).start()
+                            args=(sock, addr),
+                            daemon=True).start()
     finally:
         server.close()
 
